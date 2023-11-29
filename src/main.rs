@@ -5,12 +5,16 @@ mod indexer;
 use config::*;
 use indexer::*;
 
+use reqwest::Client;
 use std::error::Error;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::new();
-    let mut indexer = Indexer::new(config);
-    indexer.build_index().await?;
+    let client = Arc::new(Client::new());
+    let indexer = Arc::new(Indexer::new(&config, Arc::clone(&client)));
+    indexer.build_index(config.pages_to_index).await?;
+    println!("{:?}", indexer.links);
     Ok(())
 }

@@ -16,6 +16,7 @@ pub struct Config {
     pub ratios: String,
     pub ai_art_filter: String,
     pub downloads_path: String,
+    pub pages_to_index: u32,
 }
 
 impl Config {
@@ -33,6 +34,7 @@ impl Config {
             ratios: env::var("RATIOS").unwrap(),
             ai_art_filter: env::var("AI_ART_FILTER").unwrap(),
             downloads_path: env::var("DOWNLOADS_PATH").unwrap(),
+            pages_to_index: env::var("PAGES_TO_INDEX").unwrap().parse().unwrap(),
         }
     }
 }
