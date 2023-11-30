@@ -13,8 +13,10 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::new();
     let client = Arc::new(Client::new());
+
     let indexer = Arc::new(Indexer::new(&config, Arc::clone(&client)));
     indexer.build_index(config.pages_to_index).await?;
-    println!("{:?}", indexer.links);
+    indexer.write_to_file("./index.txt")?;
+
     Ok(())
 }

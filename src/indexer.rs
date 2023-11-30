@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    io::Write,
     sync::{Arc, Mutex},
 };
 
@@ -73,6 +74,18 @@ impl Indexer {
         }
 
         join_all(tasks).await;
+
+        Ok(())
+    }
+
+    pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        let links = self.links.lock().unwrap();
+        let data: String = links
+            .iter()
+            .map(|(key, value)| format!("wallhaven_{}:{}\n", key, value))
+            .collect();
+
+        std::fs::write(path, data)?;
 
         Ok(())
     }
