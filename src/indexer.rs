@@ -1,13 +1,11 @@
-use crate::config::Config;
+use crate::{config::Config, rate_limiter::RateLimiter};
 
 use futures::future::join_all;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    io::Write,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Index {
@@ -26,14 +24,22 @@ pub struct Indexer {
     pub url: String,
     pub links: Arc<Mutex<HashMap<String, String>>>,
     pub client: Arc<Client>,
+    pub rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 impl Indexer {
-    pub fn new(config: &Config, client: Arc<Client>) -> Indexer {
+    pub fn new(config: &Config, client: Arc<Client>, requests_per_minute: u32) -> Indexer {
         let url = Self::build_url(config);
         let links = Arc::new(Mutex::new(HashMap::new()));
 
-        Indexer { url, links, client }
+        let rate_limiter = Arc::new(Mutex::new(RateLimiter::new(requests_per_minute)));
+
+        Indexer {
+            url,
+            links,
+            client,
+            rate_limiter,
+        }
     }
 
     fn build_url(config: &Config) -> String {
@@ -52,37 +58,62 @@ impl Indexer {
     }
 
     pub async fn build_index(&self, page_count: u32) -> Result<(), String> {
-        let urls: Vec<String> = (1..=page_count)
-            .map(|page| format!("{}&page={}", self.url, page))
-            .collect();
-
-        let mut tasks = Vec::new();
-
-        for url in urls {
-            let client = Arc::clone(&self.client);
-            let links = Arc::clone(&self.links);
-
-            tasks.push(tokio::spawn(async move {
-                let response = client.get(url).send().await.unwrap();
-                if let Some(parsed) = response.json::<Index>().await.ok() {
-                    parsed.data.into_iter().for_each(|data| {
-                        let mut links = links.lock().unwrap();
-                        links.entry(data.id).or_insert(data.path);
-                    })
-                }
-            }));
-        }
+        let tasks = (1..=page_count)
+            .map(|page| {
+                let url = format!("{}&page={}", self.url, page);
+                Self::process_url(
+                    url,
+                    Arc::clone(&self.client),
+                    Arc::clone(&self.links),
+                    Arc::clone(&self.rate_limiter),
+                )
+            })
+            .collect::<Vec<_>>();
 
         join_all(tasks).await;
 
         Ok(())
     }
 
-    pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
-        let links = self.links.lock().unwrap();
-        let data: String = links
+    async fn process_url(
+        url: String,
+        client: Arc<Client>,
+        links: Arc<Mutex<HashMap<String, String>>>,
+        rate_limiter: Arc<Mutex<RateLimiter>>,
+    ) {
+        let mut rate_limiter = rate_limiter.lock().await;
+        if rate_limiter.counter <= 0 {
+            eprintln!("Rate limit hit!");
+            sleep(Duration::from_secs(
+                60 / rate_limiter.requests_per_minute as u64,
+            ))
+            .await;
+
+            rate_limiter.counter = rate_limiter.requests_per_minute;
+        }
+        drop(rate_limiter);
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                let mut links = links.lock().await;
+
+                if let Ok(parsed) = response.json::<Index>().await {
+                    parsed.data.into_iter().for_each(|data| {
+                        links.entry(data.id).or_insert(data.path);
+                    });
+                }
+            }
+            Err(err) => eprintln!("Error fetching {}: {}", url, err),
+        }
+    }
+
+    pub async fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        let data: String = self
+            .links
+            .lock()
+            .await
             .iter()
-            .map(|(key, value)| format!("wallhaven_{}:{}\n", key, value))
+            .map(|(key, value)| format!("wallhaven-{}:{}\n", key, value))
             .collect();
 
         std::fs::write(path, data)?;
